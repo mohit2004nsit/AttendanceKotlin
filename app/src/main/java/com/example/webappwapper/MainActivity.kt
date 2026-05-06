@@ -172,8 +172,7 @@ class MainActivity : AppCompatActivity() {
         setupWebView()
         handleBackNavigation()
 
-        // Pointing to the Test Environment
-        webView.loadUrl("https://attendance-dtu--test-vybq7g6v.web.app/")
+        webView.loadUrl(BuildConfig.WEBAPP_URL)
     }
 
     private fun setupWebView() {
@@ -185,7 +184,7 @@ class MainActivity : AppCompatActivity() {
             useWideViewPort = true
             setSupportMultipleWindows(true)
             javaScriptCanOpenWindowsAutomatically = true
-            cacheMode = android.webkit.WebSettings.LOAD_CACHE_ELSE_NETWORK
+            cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
 
             // Fix Google Login by customising the User Agent
             val defaultUA = userAgentString

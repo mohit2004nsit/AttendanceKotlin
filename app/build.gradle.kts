@@ -20,8 +20,21 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // 🚨 1. ADDED: Enables Android Studio to generate the BuildConfig variables
+    buildFeatures {
+        buildConfig = true
+    }
+
     buildTypes {
+        // 🚨 2. ADDED: Your Testing Environment (used when hitting the "Play" button)
+        debug {
+            buildConfigField("String", "WEBAPP_URL", "\"https://attendance-dtu--test-vybq7g6v.web.app/\"")
+        }
+
+        // 🚨 3. UPDATED: Your Live Environment (used when generating the final APK/Bundle)
         release {
+            buildConfigField("String", "WEBAPP_URL", "\"https://attendance-dtu.web.app/\"")
+
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -29,6 +42,7 @@ android {
             )
         }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11

@@ -206,7 +206,8 @@ class WebAppInterface(private val context: Context, private val webView: WebView
     @JavascriptInterface
     fun startBluetoothScanner(sessionCode: String): Boolean {
         try {
-            val adapter = getScannerAdapter() ?: return false
+            // 🚨 FIX: Pass isAutoCapture = true so the Teacher's phone remembers to auto-resume!
+            val adapter = getScannerAdapter(isAutoCapture = true) ?: return false
             val scanner = adapter.bluetoothLeScanner ?: return false
 
             val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
