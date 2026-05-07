@@ -32,12 +32,90 @@ import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
 import android.location.LocationManager
 import android.content.Context
-
+import android.webkit.ValueCallback
+import androidx.credentials.CredentialManager
+import androidx.credentials.GetCredentialRequest
+import androidx.credentials.exceptions.GetCredentialException
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import androidx.credentials.CustomCredential
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
     var pendingAutoCapture = false
+
+
+    // ==========================================
+    // ULTIMATE MODERN NATIVE GOOGLE SIGN-IN (Credential Manager)
+    // ==========================================
+
+    fun startNativeGoogleSignIn() {
+        val credentialManager = CredentialManager.create(this)
+
+        // 1. Configure the Google Sign-in options
+        val googleIdOption: GetGoogleIdOption = GetGoogleIdOption.Builder()
+            .setFilterByAuthorizedAccounts(false) // Shows all accounts on the phone
+            .setServerClientId("247831875348-0qjc7hc9o13ipj0uaup9hsd3cbmeuo3i.apps.googleusercontent.com")
+            .setAutoSelectEnabled(false)
+            .build()
+
+        // 2. Build the request
+        val request: GetCredentialRequest = GetCredentialRequest.Builder()
+            .addCredentialOption(googleIdOption)
+            .build()
+
+        // 3. Launch the native UI in a background coroutine
+        lifecycleScope.launch {
+            try {
+                val result = credentialManager.getCredential(
+                    request = request,
+                    context = this@MainActivity,
+                )
+
+                val credential = result.credential
+
+                // 4. Extract the token and send it to the WebView
+                if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                    val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
+                    val idToken = googleIdTokenCredential.idToken
+
+                    webView.evaluateJavascript("javascript:if(window.signInFromAndroid) window.signInFromAndroid('$idToken');", null)
+                }
+            } catch (e: GetCredentialException) {
+                Log.e("Auth", "Credential Manager failed: ${e.message}")
+                android.widget.Toast.makeText(this@MainActivity, "Sign In Error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+            }
+
+        }
+    }
+
+    // ==========================================
+    // NATIVE FILE PICKER (For Excel, Images, and PDFs)
+    // ==========================================
+
+    // 1. Holds the connection to the web page's upload button
+    private var filePathCallback: ValueCallback<Array<Uri>>? = null
+
+    // 2. The Native Android File Picker Launcher
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val data = result.data?.data
+            if (data != null) {
+                // User picked a single file, send it back to HTML
+                filePathCallback?.onReceiveValue(arrayOf(data))
+            } else {
+                filePathCallback?.onReceiveValue(null) // Cancelled
+            }
+        } else {
+            filePathCallback?.onReceiveValue(null) // Cancelled
+        }
+        filePathCallback = null // Reset the callback so it can be used again
+    }
 
 
     // ==========================================
@@ -211,6 +289,33 @@ class MainActivity : AppCompatActivity() {
                 // This automatically grants the web app access to the camera and microphone
                 // IF the native Android permissions (from step 2) were granted by the user.
                 request?.grant(request.resources)
+            }
+
+            // 🚨 INTERCEPT FILE UPLOADS 🚨
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+                // Cancel any existing request that might be hanging
+                this@MainActivity.filePathCallback?.onReceiveValue(null)
+
+                // Save the new callback to our global variable
+                this@MainActivity.filePathCallback = filePathCallback
+
+                // fileChooserParams automatically reads your HTML "accept" tags!
+                // So it knows if it should look for PDFs, Images, or Excels.
+                val intent = fileChooserParams?.createIntent()
+
+                try {
+                    if (intent != null) {
+                        fileChooserLauncher.launch(intent)
+                    }
+                } catch (e: Exception) {
+                    this@MainActivity.filePathCallback = null
+                    return false
+                }
+                return true
             }
 
             override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {

@@ -12,6 +12,13 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.widget.Toast
 
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import java.util.Locale
+import java.util.Locale.getDefault
+
 class WebAppInterface(private val context: Context, private val webView: WebView) {
 
     private val APP_ID = 43981
@@ -243,6 +250,84 @@ class WebAppInterface(private val context: Context, private val webView: WebView
             adapter.bluetoothLeScanner?.stopScan(teacherScannerCallback)
             teacherScannerCallback = null
         } catch (e: Exception) {}
+    }
+
+
+    @JavascriptInterface
+    fun triggerNativeLogin() {
+        // Tell MainActivity to open the native Google Account picker
+        Handler(Looper.getMainLooper()).post {
+            (context as? MainActivity)?.startNativeGoogleSignIn()
+        }
+    }
+
+
+    // ==========================================
+    // 5. NATIVE UI BRIDGE (Updated)
+    // ==========================================
+
+    // 🚨 ADD THIS NEW FUNCTION HERE
+    @JavascriptInterface
+    fun triggerHapticFeedback(patternType: String) {
+        Handler(Looper.getMainLooper()).post {
+
+            // This grabs the Vibrator service safely, supporting all Android versions
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                vibratorManager.defaultVibrator
+            } else {
+                context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            }
+
+            if (vibrator.hasVibrator()) {
+
+                // We define specific vibration patterns based on the action
+                when (patternType.lowercase(getDefault())) {
+
+                    // A very light, sharp "tick" (perfect for marking attendance)
+                    "tick" -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            // Effect: 20ms pulse at medium intensity
+                            vibrator.vibrate(VibrationEffect.createOneShot(20, 100))
+                        } else {
+                            // Fallback for older Androids
+                            vibrator.vibrate(20)
+                        }
+                    }
+
+                    // A slightly longer pulse (great for "Saving complete")
+                    "success" -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            vibrator.vibrate(VibrationEffect.createOneShot(100, 180))
+                        } else {
+                            vibrator.vibrate(100)
+                        }
+                    }
+
+                    // A heavy, jarring pattern (for errors or cancellations)
+                    "error" -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            vibrator.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 50, 50, 200), -1))
+                        } else {
+                            vibrator.vibrate(longArrayOf(0, 50, 50, 200), -1)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
+    // 🚨 PASTE THE NEW NATIVE UI BRIDGE HERE 🚨
+    // ==========================================
+    // 5. NATIVE UI BRIDGE
+    // ==========================================
+    @JavascriptInterface
+    fun showNativeToast(msg: String) {
+        Handler(Looper.getMainLooper()).post {
+            // Toast.LENGTH_SHORT is about 2 seconds, standard for Android
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun showToast(msg: String) {
