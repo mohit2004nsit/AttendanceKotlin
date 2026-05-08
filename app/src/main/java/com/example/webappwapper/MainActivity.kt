@@ -41,6 +41,11 @@ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import androidx.credentials.CustomCredential
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
+import android.accounts.Account
+import com.google.android.gms.auth.GoogleAuthUtil
+import com.google.android.gms.auth.UserRecoverableAuthException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
@@ -92,6 +97,54 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+
+    // ==========================================
+    // NATIVE GOOGLE DRIVE OAUTH SYNC
+    // ==========================================
+
+    var currentGoogleEmail: String? = null
+
+    // 1. The Launcher that catches the native "Allow Google Drive Access" popup
+    private val drivePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            // The user clicked "Allow"! Let's grab the token now.
+            currentGoogleEmail?.let { fetchDriveTokenNatively(it) }
+        } else {
+            android.widget.Toast.makeText(this, "Drive sync cancelled.", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // 2. The function that asks Android for the Drive Token
+    fun fetchDriveTokenNatively(email: String) {
+        currentGoogleEmail = email
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                // Ask the Android OS for the secure Drive token
+                val account = Account(email, "com.google")
+                val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+                val token = GoogleAuthUtil.getToken(this@MainActivity, account, scope)
+
+                // Success! Send the token into the JavaScript WebView
+                withContext(Dispatchers.Main) {
+                    webView.evaluateJavascript("javascript:if(window.onNativeDriveToken) window.onNativeDriveToken('$token');", null)
+                }
+            } catch (e: UserRecoverableAuthException) {
+                // The OS says: "The user hasn't granted Drive permission yet!"
+                // So we launch the native Android permission popup
+                withContext(Dispatchers.Main) {
+                    drivePermissionLauncher.launch(e.intent)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Log.e("DriveAuth", "Failed to get Drive token", e)
+                    android.widget.Toast.makeText(this@MainActivity, "Sync Error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
     // ==========================================
     // NATIVE FILE PICKER (For Excel, Images, and PDFs)
     // ==========================================
@@ -119,84 +172,97 @@ class MainActivity : AppCompatActivity() {
 
 
     // ==========================================
-    // 1. STRICT PERMISSION SYSTEM ("THE HARD GATE")
+    // 1. SMART PERMISSION SYSTEM (Just-In-Time)
     // ==========================================
 
-    // Safely handles both older Androids and Android 12+ Bluetooth rules
-    private val requiredPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        arrayOf(
-            Manifest.permission.CAMERA,
-            Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION,
-            Manifest.permission.BLUETOOTH_SCAN,
-            Manifest.permission.BLUETOOTH_CONNECT,
-            Manifest.permission.BLUETOOTH_ADVERTISE
-        )
+    // Group 1: Bluetooth & Location (For Auto-Capture / Beacons)
+    val blePermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE)
     } else {
-        arrayOf(
-            Manifest.permission.CAMERA,
-            Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        )
+        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
     }
 
-    private val requestPermissionsLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val allGranted = permissions.entries.all { it.value }
-        if (!allGranted) {
-            showPermissionSettingsDialog()
+    // 🚨 FIX 1: Removed RECORD_AUDIO. This stops Android from silently auto-denying the camera!
+    val cameraPermissions = arrayOf(Manifest.permission.CAMERA)
+
+    // Launchers catch the result and tell Javascript to proceed
+    private val blePermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
+        if (perms.all { it.value }) {
+            webView.evaluateJavascript("javascript:if(window.onBlePermissionsGranted) window.onBlePermissionsGranted();", null)
+            // 🚨 ADD THIS LINE TO RESUME AFTER PERMISSION GRANTED:
+            webView.evaluateJavascript("javascript:if(window.resumeAutoCapture) window.resumeAutoCapture();", null)
+        } else {
+            showPermissionSettingsDialog("Bluetooth & Location")
         }
     }
 
-    // This automatically checks permissions EVERY TIME they open or return to the app
+    private val cameraPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
+        if (perms.all { it.value }) {
+            webView.evaluateJavascript("javascript:if(window.onCameraPermissionsGranted) window.onCameraPermissionsGranted();", null)
+        } else {
+            showPermissionSettingsDialog("Camera")
+        }
+    }
+
+    // Functions to trigger the checks
+    fun checkAndRequestBlePermissions() {
+        val hasAll = blePermissions.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
+        if (!hasAll) blePermissionLauncher.launch(blePermissions)
+        else webView.evaluateJavascript("javascript:if(window.onBlePermissionsGranted) window.onBlePermissionsGranted();", null)
+    }
+
+    fun checkAndRequestCameraPermissions() {
+        val hasAll = cameraPermissions.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
+        if (!hasAll) cameraPermissionLauncher.launch(cameraPermissions)
+        else webView.evaluateJavascript("javascript:if(window.onCameraPermissionsGranted) window.onCameraPermissionsGranted();", null)
+    }
+
+    private fun showPermissionSettingsDialog(type: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Permission Required ⚙️")
+            .setMessage("iClassroom requires $type access to perform this action.\n\nPlease tap 'Settings', go to 'Permissions', and allow it.")
+            .setCancelable(false)
+            .setPositiveButton("Go to Settings") { _, _ ->
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                val uri = Uri.fromParts("package", packageName, null)
+                intent.data = uri
+                startActivity(intent)
+            }
+            // 🚨 FIX 2: Tell Javascript the user canceled so it unfreezes the UI and stops script errors!
+            .setNegativeButton("Cancel") { _, _ ->
+                if (type == "Camera") {
+                    webView.evaluateJavascript("javascript:if(window.onCameraPermissionsDenied) window.onCameraPermissionsDenied();", null)
+                } else {
+                    webView.evaluateJavascript("javascript:if(window.abortAutoCapture) window.abortAutoCapture();", null)
+                }
+            }
+            .show()
+    }
+
+    // 🚨 FIX 3: Wrapped the Bluetooth check in a try-catch so it doesn't crash the app!
     override fun onResume() {
         super.onResume()
-        if (!hasAllPermissions()) {
-            requestPermissionsLauncher.launch(requiredPermissions)
-        } else if (pendingAutoCapture) {
-            // 🚨 NEW: They just came back from settings. Check if they fixed it!
-            val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-            val isBtOn = bluetoothManager.adapter?.isEnabled == true
-            val isLocOn = isLocationEnabled()
+        if (pendingAutoCapture) {
+            try {
+                val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+                val isBtOn = bluetoothManager.adapter?.isEnabled == true
+                val isLocOn = isLocationEnabled()
 
-            if (isBtOn && isLocOn) {
-                // They fixed it! Auto-start the scan!
-                pendingAutoCapture = false
-                webView.evaluateJavascript("javascript:if(window.resumeAutoCapture) window.resumeAutoCapture();", null)
-            } else {
-                // They came back but didn't turn it on. Cancel the scan.
+                if (isBtOn && isLocOn) {
+                    pendingAutoCapture = false
+                    webView.evaluateJavascript("javascript:if(window.resumeAutoCapture) window.resumeAutoCapture();", null)
+                } else {
+                    pendingAutoCapture = false
+                    webView.evaluateJavascript("javascript:if(window.abortAutoCapture) window.abortAutoCapture();", null)
+                }
+            } catch (e: SecurityException) {
+                // User hasn't granted permissions yet, fail gracefully instead of crashing
                 pendingAutoCapture = false
                 webView.evaluateJavascript("javascript:if(window.abortAutoCapture) window.abortAutoCapture();", null)
             }
         }
     }
 
-    private fun hasAllPermissions(): Boolean {
-        return requiredPermissions.all {
-            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
-        }
-    }
-
-    private fun showPermissionSettingsDialog() {
-        AlertDialog.Builder(this)
-            .setTitle("Permissions Required 🛑")
-            .setMessage("iClassroom requires your Camera, Microphone, Location, and Bluetooth to securely mark attendance.\n\nPlease tap 'Settings', go to 'Permissions', and allow all of them to continue.")
-            .setCancelable(false) // Prevents them from tapping outside to dismiss it
-            .setPositiveButton("Go to Settings") { _, _ ->
-                // Teleports them directly to the app's permission page in Android Settings!
-                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                val uri = Uri.fromParts("package", packageName, null)
-                intent.data = uri
-                startActivity(intent)
-            }
-            .setNegativeButton("Exit App") { _, _ ->
-                finish() // Closes the app if they refuse
-            }
-            .show()
-    }
 
     // ==========================================
     // NEW: Smart Launcher to chain BT and Location
@@ -227,8 +293,13 @@ class MainActivity : AppCompatActivity() {
 
     // A public function your WebAppInterface can call
     fun promptEnableBluetooth() {
-        val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-        enableBluetoothLauncher.launch(enableBtIntent)
+        try {
+            val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+            enableBluetoothLauncher.launch(enableBtIntent)
+        } catch (e: SecurityException) {
+            // Android 12+ strict enforcement caught here!
+            checkAndRequestBlePermissions()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

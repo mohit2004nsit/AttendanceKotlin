@@ -24,14 +24,31 @@ class WebAppInterface(private val context: Context, private val webView: WebView
     private val APP_ID = 43981
 
     // --- Shared Helper ---
-    private fun getAdapter(): BluetoothAdapter? {
+    private fun hasBlePermissions(): Boolean {
+        val mainActivity = context as? MainActivity ?: return false
+        return mainActivity.blePermissions.all {
+            androidx.core.content.ContextCompat.checkSelfPermission(mainActivity, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun getAdapter(isAutoCapture: Boolean = false): BluetoothAdapter? {
         try {
+            val mainActivity = context as? MainActivity
+            // 🚨 FIX 1: Ask for permissions BEFORE touching Bluetooth to prevent crashes
+            if (mainActivity != null && !hasBlePermissions()) {
+                if (isAutoCapture) mainActivity.pendingAutoCapture = true
+                Handler(Looper.getMainLooper()).post {
+                    mainActivity.checkAndRequestBlePermissions()
+                }
+                return null
+            }
+
             val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
             val adapter = bluetoothManager.adapter
             if (adapter == null || !adapter.isEnabled) {
+                if (isAutoCapture && mainActivity != null) mainActivity.pendingAutoCapture = true
                 Handler(Looper.getMainLooper()).post {
-                    if (context is MainActivity) context.promptEnableBluetooth()
-                    else showToast("Please turn on your Bluetooth!")
+                    mainActivity?.promptEnableBluetooth()
                 }
                 return null
             }
@@ -42,29 +59,18 @@ class WebAppInterface(private val context: Context, private val webView: WebView
         }
     }
 
-    // --- Shared Helper for Scanners (Checks BT + Location) ---
     private fun getScannerAdapter(isAutoCapture: Boolean = false): BluetoothAdapter? {
         try {
             val mainActivity = context as? MainActivity
-            val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            val adapter = getAdapter(isAutoCapture) ?: return null
 
-            val isBtOn = bluetoothManager.adapter?.isEnabled == true
             val isLocOn = mainActivity?.isLocationEnabled() == true
-
-            // 🚨 CRITICAL FIX: Set the memory flag BEFORE anything else happens!
-            if ((!isBtOn || !isLocOn) && isAutoCapture && mainActivity != null) {
-                mainActivity.pendingAutoCapture = true
-            }
-
-            // Now trigger the normal Bluetooth check/popup
-            val adapter = getAdapter() ?: return null
-
-            // If we survive the line above, Bluetooth is ON. Now check Location.
-            if (mainActivity != null && !isLocOn) {
+            if (!isLocOn) {
+                if (isAutoCapture && mainActivity != null) mainActivity.pendingAutoCapture = true
                 Handler(Looper.getMainLooper()).post {
-                    mainActivity.promptEnableLocation()
+                    mainActivity?.promptEnableLocation()
                 }
-                return null // Abort scan because Location is off
+                return null
             }
 
             return adapter
@@ -87,7 +93,7 @@ class WebAppInterface(private val context: Context, private val webView: WebView
     @JavascriptInterface
     fun broadcastBluetooth(sessionCode: String, rollNumber: String, timestamp: String): Boolean {
         try {
-            val adapter = getAdapter() ?: return false
+            val adapter = getAdapter(isAutoCapture = false) ?: return false
             val advertiser = adapter.bluetoothLeAdvertiser ?: return false
 
             val settings = AdvertiseSettings.Builder()
@@ -172,7 +178,7 @@ class WebAppInterface(private val context: Context, private val webView: WebView
     @JavascriptInterface
     fun startTeacherBeacon(sessionCode: String, qrMode: String): Boolean {
         try {
-            val adapter = getAdapter() ?: return false
+            val adapter = getAdapter(isAutoCapture = true) ?: return false
             val advertiser = adapter.bluetoothLeAdvertiser ?: return false
 
             val settings = AdvertiseSettings.Builder()
@@ -261,6 +267,14 @@ class WebAppInterface(private val context: Context, private val webView: WebView
         }
     }
 
+    @JavascriptInterface
+    fun requestDriveToken(email: String) {
+        // Tell Android to get the Google Drive token for this specific email
+        Handler(Looper.getMainLooper()).post {
+            (context as? MainActivity)?.fetchDriveTokenNatively(email)
+        }
+    }
+
 
     // ==========================================
     // 5. NATIVE UI BRIDGE (Updated)
@@ -317,10 +331,21 @@ class WebAppInterface(private val context: Context, private val webView: WebView
         }
     }
 
+    @JavascriptInterface
+    fun requestBlePermissions() {
+        Handler(Looper.getMainLooper()).post {
+            (context as? MainActivity)?.checkAndRequestBlePermissions()
+        }
+    }
 
-    // 🚨 PASTE THE NEW NATIVE UI BRIDGE HERE 🚨
-    // ==========================================
-    // 5. NATIVE UI BRIDGE
+    @JavascriptInterface
+    fun requestCameraPermissions() {
+        Handler(Looper.getMainLooper()).post {
+            (context as? MainActivity)?.checkAndRequestCameraPermissions()
+        }
+    }
+
+
     // ==========================================
     @JavascriptInterface
     fun showNativeToast(msg: String) {
