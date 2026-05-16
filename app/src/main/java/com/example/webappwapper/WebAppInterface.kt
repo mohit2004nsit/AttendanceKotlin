@@ -13,9 +13,15 @@ import android.webkit.WebView
 import android.widget.Toast
 
 import android.os.Build
+import android.os.Environment
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.util.Base64
+import android.content.ContentValues
+import android.provider.MediaStore
+import java.io.File
+import java.io.FileOutputStream
 import java.util.Locale
 import java.util.Locale.getDefault
 
@@ -342,6 +348,55 @@ class WebAppInterface(private val context: Context, private val webView: WebView
     fun requestCameraPermissions() {
         Handler(Looper.getMainLooper()).post {
             (context as? MainActivity)?.checkAndRequestCameraPermissions()
+        }
+    }
+
+    // ==========================================
+    // 6. BLOB DOWNLOAD HANDLER (Excel Exports)
+    // ==========================================
+    @JavascriptInterface
+    fun processBlobDownload(base64Data: String, mimeType: String, fileName: String) {
+        try {
+            val pureBase64 = if (base64Data.contains(",")) base64Data.split(",")[1] else base64Data
+            val fileBytes = Base64.decode(pureBase64, Base64.DEFAULT)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Modern Scoped Storage (Android 10+)
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                }
+
+                val resolver = context.contentResolver
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+
+                if (uri != null) {
+                    resolver.openOutputStream(uri).use { outputStream ->
+                        outputStream?.write(fileBytes)
+                    }
+                    showToast("File saved to Downloads: $fileName")
+                } else {
+                    showToast("Failed to create file in Downloads")
+                }
+            } else {
+                // Legacy Storage (Android 9 and below)
+                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val file = File(downloadsDir, fileName)
+                FileOutputStream(file).use { fos ->
+                    fos.write(fileBytes)
+                }
+                
+                // Notify MediaScanner for legacy
+                val mainActivity = context as? MainActivity
+                mainActivity?.let {
+                    android.media.MediaScannerConnection.scanFile(it, arrayOf(file.absolutePath), null, null)
+                }
+                showToast("File saved to Downloads: $fileName")
+            }
+        } catch (e: Exception) {
+            Log.e("Download", "Blob save failed", e)
+            showToast("Download failed: ${e.message}")
         }
     }
 

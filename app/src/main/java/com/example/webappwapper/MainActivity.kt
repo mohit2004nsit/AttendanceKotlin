@@ -13,7 +13,9 @@ import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.URLUtil
 import android.widget.ProgressBar
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -21,12 +23,14 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import android.app.Activity
+import android.app.DownloadManager
 import android.content.Intent
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.Settings
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
@@ -348,6 +352,48 @@ class MainActivity : AppCompatActivity() {
 
         // Attach your Bluetooth Bridge
         webView.addJavascriptInterface(WebAppInterface(this, webView), "AndroidApp")
+
+        webView.setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
+            if (url.startsWith("blob:")) {
+                // 🚨 FIX: Handling Blob URLs (Modern Excel exports)
+                // These don't work with DownloadManager, so we extract them via JS
+                val fileName = URLUtil.guessFileName(url, contentDisposition, mimetype)
+                val js = """
+                    (function() {
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('GET', '$url', true);
+                        xhr.responseType = 'blob';
+                        xhr.onload = function(e) {
+                            if (this.status == 200) {
+                                var blob = this.response;
+                                var reader = new FileReader();
+                                reader.readAsDataURL(blob);
+                                reader.onloadend = function() {
+                                    var base64data = reader.result;
+                                    AndroidApp.processBlobDownload(base64data, '$mimetype', '$fileName');
+                                }
+                            }
+                        };
+                        xhr.send();
+                    })();
+                """.trimIndent()
+                webView.evaluateJavascript(js, null)
+            } else {
+                // Normal HTTP/HTTPS URLs
+                val request = DownloadManager.Request(Uri.parse(url))
+                request.setMimeType(mimetype)
+                val cookies = CookieManager.getInstance().getCookie(url)
+                request.addRequestHeader("cookie", cookies)
+                request.addRequestHeader("User-Agent", userAgent)
+                request.setDescription("Downloading file...")
+                request.setTitle(URLUtil.guessFileName(url, contentDisposition, mimetype))
+                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, URLUtil.guessFileName(url, contentDisposition, mimetype))
+                val dm = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+                dm.enqueue(request)
+                Toast.makeText(applicationContext, "Downloading File", Toast.LENGTH_LONG).show()
+            }
+        }
 
         webView.webViewClient = WebViewClient()
 
